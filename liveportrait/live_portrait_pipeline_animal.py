@@ -21,6 +21,7 @@ from rich.progress import track
 from .config.argument_config import ArgumentConfig
 from .config.inference_config import InferenceConfig
 from .config.crop_config import CropConfig
+from .utils.cropper import Cropper
 from .utils.camera import get_rotation_matrix
 from .utils.video import images2video, concat_frames, get_fps, add_audio_to_video, has_audio_stream, video2gif
 from .utils.crop import _transform_img, prepare_paste_back, paste_back
@@ -38,15 +39,7 @@ class LivePortraitPipelineAnimal(object):
 
     def __init__(self, inference_cfg: InferenceConfig, crop_cfg: CropConfig):
         self.live_portrait_wrapper_animal: LivePortraitWrapperAnimal = LivePortraitWrapperAnimal(inference_cfg=inference_cfg)
-        if crop_cfg.model == 'mediapipe':
-            from .utils.cropper_mediapipe import Cropper
-            self.cropper: Cropper = Cropper(crop_cfg=crop_cfg, image_type='animal_face', flag_use_half_precision=inference_cfg.flag_use_half_precision)
-        elif crop_cfg.model == 'facealignment':
-            from .utils.cropper_face_alignment import Cropper
-            self.cropper: Cropper = Cropper(crop_cfg=crop_cfg, image_type='animal_face', flag_use_half_precision=inference_cfg.flag_use_half_precision)
-        else:
-            from .utils.cropper import Cropper
-            self.cropper: Cropper = Cropper(crop_cfg=crop_cfg, image_type='animal_face', flag_use_half_precision=inference_cfg.flag_use_half_precision)
+        self.cropper: Cropper = Cropper(crop_cfg=crop_cfg, image_type='animal_face', flag_use_half_precision=inference_cfg.flag_use_half_precision)
 
     def make_motion_template(self, I_lst, **kwargs):
         n_frames = I_lst.shape[0]

@@ -2,9 +2,14 @@ from pathlib import Path
 import os
 
 from internal_liveportrait.utils_base import *
-from liveportrait.config.animal_models import version_animals
+
+try:
+    from liveportrait.config.animal_models import version_animals
+except Exception:
+    version_animals = ""
 
 from modules.modelloader import load_file_from_url
+
 try:
     from modules.paths_internal import models_path
 except Exception:
@@ -18,12 +23,22 @@ repo_root = Path(__file__).parent.parent
 
 animal_model_urls_prefix_by_version = {
     "": "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/animal",
-    "_v1.1": "https://github.com/dimitribarbot/sd-webui-live-portrait/releases/download/v0.3.0"
+    "_v1.1": "https://github.com/dimitribarbot/sd-webui-live-portrait/releases/download/v0.3.0",
 }
 
 
 def get_xpose_lib_dir():
-    return os.path.join(repo_root, "liveportrait", "utils", "dependencies", "XPose", "models", "UniPose", "ops", "lib")
+    return os.path.join(
+        repo_root,
+        "liveportrait",
+        "utils",
+        "dependencies",
+        "XPose",
+        "models",
+        "UniPose",
+        "ops",
+        "lib",
+    )
 
 
 def has_xpose_lib():
@@ -33,6 +48,7 @@ def has_xpose_lib():
 
 def del_xpose_lib_dir():
     import shutil
+
     xpose_lib_dir = get_xpose_lib_dir()
     shutil.rmtree(xpose_lib_dir, ignore_errors=True)
 
@@ -40,7 +56,7 @@ def del_xpose_lib_dir():
 def download_models(model_root, model_urls):
     if not os.path.exists(model_root):
         os.makedirs(model_root, exist_ok=True)
-    
+
     for local_file, url in model_urls:
         local_path = os.path.join(model_root, local_file)
         if not os.path.exists(local_path):
@@ -53,8 +69,14 @@ def download_insightface_models():
     """
     model_root = os.path.join(models_path, "insightface", "models", "buffalo_l")
     model_urls = (
-        ("det_10g.onnx", "https://huggingface.co/KwaiVGI/LivePortrait/resolve/main/insightface/models/buffalo_l/det_10g.onnx"),
-        ("2d106det.onnx", "https://huggingface.co/KwaiVGI/LivePortrait/resolve/main/insightface/models/buffalo_l/2d106det.onnx"),
+        (
+            "det_10g.onnx",
+            "https://huggingface.co/KwaiVGI/LivePortrait/resolve/main/insightface/models/buffalo_l/det_10g.onnx",
+        ),
+        (
+            "2d106det.onnx",
+            "https://huggingface.co/KwaiVGI/LivePortrait/resolve/main/insightface/models/buffalo_l/2d106det.onnx",
+        ),
     )
     download_models(model_root, model_urls)
 
@@ -65,7 +87,10 @@ def download_liveportrait_landmark_model():
     """
     model_root = os.path.join(models_path, "liveportrait")
     model_urls = (
-        ("landmark.onnx", "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/landmark.onnx"),
+        (
+            "landmark.onnx",
+            "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/landmark.onnx",
+        ),
     )
     download_models(model_root, model_urls)
 
@@ -76,10 +101,22 @@ def download_liveportrait_base_models():
     """
     model_root = os.path.join(models_path, "liveportrait", "base_models")
     model_urls = (
-        ("appearance_feature_extractor.safetensors", "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/appearance_feature_extractor.safetensors"),
-        ("motion_extractor.safetensors", "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/motion_extractor.safetensors"),
-        ("spade_generator.safetensors", "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/spade_generator.safetensors"),
-        ("warping_module.safetensors", "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/warping_module.safetensors"),
+        (
+            "appearance_feature_extractor.safetensors",
+            "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/appearance_feature_extractor.safetensors",
+        ),
+        (
+            "motion_extractor.safetensors",
+            "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/motion_extractor.safetensors",
+        ),
+        (
+            "spade_generator.safetensors",
+            "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/spade_generator.safetensors",
+        ),
+        (
+            "warping_module.safetensors",
+            "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/warping_module.safetensors",
+        ),
     )
     download_models(model_root, model_urls)
 
@@ -90,7 +127,10 @@ def download_liveportrait_retargeting_models():
     """
     model_root = os.path.join(models_path, "liveportrait", "retargeting_models")
     model_urls = (
-        ("stitching_retargeting_module.safetensors", "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/stitching_retargeting_module.safetensors"),
+        (
+            "stitching_retargeting_module.safetensors",
+            "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/stitching_retargeting_module.safetensors",
+        ),
     )
     download_models(model_root, model_urls)
 
@@ -110,7 +150,10 @@ def download_liveportrait_animals_xpose_model():
     """
     model_root = os.path.join(models_path, "liveportrait_animals")
     model_urls = (
-        ("xpose.pth", "https://huggingface.co/KwaiVGI/LivePortrait/resolve/main/liveportrait_animals/xpose.pth"),
+        (
+            "xpose.pth",
+            "https://huggingface.co/KwaiVGI/LivePortrait/resolve/main/liveportrait_animals/xpose.pth",
+        ),
     )
     download_models(model_root, model_urls)
 
@@ -119,13 +162,27 @@ def download_liveportrait_animals_base_models():
     """
     Downloading liveportrait animals base models from huggingface.
     """
-    model_root = os.path.join(models_path, "liveportrait_animals", f"base_models{version_animals}")
+    model_root = os.path.join(
+        models_path, "liveportrait_animals", f"base_models{version_animals}"
+    )
     model_urls_prefix = animal_model_urls_prefix_by_version[version_animals]
     model_urls = (
-        ("appearance_feature_extractor.safetensors", f"{model_urls_prefix}/appearance_feature_extractor.safetensors"),
-        ("motion_extractor.safetensors", f"{model_urls_prefix}/motion_extractor.safetensors"),
-        ("spade_generator.safetensors", f"{model_urls_prefix}/spade_generator.safetensors"),
-        ("warping_module.safetensors", f"{model_urls_prefix}/warping_module.safetensors"),
+        (
+            "appearance_feature_extractor.safetensors",
+            f"{model_urls_prefix}/appearance_feature_extractor.safetensors",
+        ),
+        (
+            "motion_extractor.safetensors",
+            f"{model_urls_prefix}/motion_extractor.safetensors",
+        ),
+        (
+            "spade_generator.safetensors",
+            f"{model_urls_prefix}/spade_generator.safetensors",
+        ),
+        (
+            "warping_module.safetensors",
+            f"{model_urls_prefix}/warping_module.safetensors",
+        ),
     )
     download_models(model_root, model_urls)
 
@@ -136,7 +193,10 @@ def download_liveportrait_animals_retargeting_models():
     """
     model_root = os.path.join(models_path, "liveportrait_animals", "retargeting_models")
     model_urls = (
-        ("stitching_retargeting_module.safetensors", "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/animal/stitching_retargeting_module.safetensors"),
+        (
+            "stitching_retargeting_module.safetensors",
+            "https://huggingface.co/Kijai/LivePortrait_safetensors/resolve/main/animal/stitching_retargeting_module.safetensors",
+        ),
     )
     download_models(model_root, model_urls)
 

@@ -4,15 +4,16 @@
 face detectoin and alignment using XPose
 """
 
+import os
+import pickle
 import torch
 import numpy as np
 from PIL import Image
 from torchvision.ops import nms
-from safetensors.torch import load_file
 
 from .timer import Timer
 from .rprint import rlog as log
-from .helper import clean_state_dict, get_loaded_model
+from .helper import clean_state_dict
 
 from .dependencies.XPose import transforms as T
 from .dependencies.XPose.models import build_model
@@ -30,22 +31,19 @@ class XPoseRunner(object):
         self.timer = Timer()
         # Load cached embeddings if available
         try:
-            tensors_9 = load_file(f'{embeddings_cache_path}_9.safetensors', device=self.device)
-            self.ins_text_embeddings_9 = tensors_9["ins_text_embeddings_9"]
-            self.kpt_text_embeddings_9 = tensors_9["kpt_text_embeddings_9"]
-            tensors_68 = load_file(f'{embeddings_cache_path}_68.safetensors', device=self.device)
-            self.ins_text_embeddings_68 = tensors_68["ins_text_embeddings_68"]
-            self.kpt_text_embeddings_68 = tensors_68["kpt_text_embeddings_68"]
+            with open(f'{embeddings_cache_path}_9.pkl', 'rb') as f:
+                self.ins_text_embeddings_9, self.kpt_text_embeddings_9 = pickle.load(f)
+            with open(f'{embeddings_cache_path}_68.pkl', 'rb') as f:
+                self.ins_text_embeddings_68, self.kpt_text_embeddings_68 = pickle.load(f)
             print("Loaded cached embeddings from file.")
-        except Exception as err:
-            print("Error while loading embeddings", err)
+        except Exception:
             raise ValueError("Could not load clip embeddings from file, please check your file path.")
 
     def load_animal_model(self, model_config_path, model_checkpoint_path, device):
         args = Config.fromfile(model_config_path)
         args.device = device
         model = build_model(args)
-        checkpoint = get_loaded_model(model_checkpoint_path, device)
+        checkpoint = torch.load(model_checkpoint_path, map_location=lambda storage, loc: storage)
         load_res = model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
         model.eval()
         return model

@@ -4,16 +4,18 @@
 All configs for user
 """
 from dataclasses import dataclass
-from typing import Literal
+import tyro
+from typing_extensions import Annotated
+from typing import Optional, Literal
 from .base_config import PrintableConfig, make_abs_path
 
 
 @dataclass(repr=False)  # use repr from PrintableConfig
 class ArgumentConfig(PrintableConfig):
     ########## input arguments ##########
-    source: str = make_abs_path('../../assets/examples/source/s0.jpg')  # path to the source portrait (human/animal) or video (human)
-    driving: str = make_abs_path('../../assets/examples/driving/d0.mp4')  # path to driving video or template (.pkl format)
-    output_dir: str = make_abs_path('../../animations')  # directory to save output video
+    source: Annotated[str, tyro.conf.arg(aliases=["-s"])] = make_abs_path('../../assets/examples/source/s0.jpg')  # path to the source portrait (human/animal) or video (human)
+    driving:  Annotated[str, tyro.conf.arg(aliases=["-d"])] = make_abs_path('../../assets/examples/driving/d0.mp4')  # path to driving video or template (.pkl format)
+    output_dir: Annotated[str, tyro.conf.arg(aliases=["-o"])] = 'animations/'  # directory to save output video
 
     ########## inference arguments ##########
     flag_use_half_precision: bool = True  # whether to use half precision (FP16). If black boxes appear, it might be due to GPU incompatibility; set to False.
@@ -46,7 +48,10 @@ class ArgumentConfig(PrintableConfig):
     scale_crop_driving_video: float = 2.2  # scale factor for cropping driving video
     vx_ratio_crop_driving_video: float = 0.  # adjust y offset
     vy_ratio_crop_driving_video: float = -0.1  # adjust x offset
-    
-    ########## face index ##########
-    source_face_index: int = 0  # source image or video face index
-    driving_face_index: int = 0  # driving video face index
+
+    ########## gradio arguments ##########
+    server_port: Annotated[int, tyro.conf.arg(aliases=["-p"])] = 8890  # port for gradio server
+    share: bool = False  # whether to share the server to public
+    server_name: Optional[str] = "127.0.0.1"  # set the local server name, "0.0.0.0" to broadcast all
+    flag_do_torch_compile: bool = False  # whether to use torch.compile to accelerate generation
+    gradio_temp_dir: Optional[str] = None  # directory to save gradio temp files

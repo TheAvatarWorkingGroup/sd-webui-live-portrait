@@ -7,14 +7,11 @@ utility functions and classes to handle feature extraction and model loading
 import os
 import os.path as osp
 import torch
-import safetensors.torch
 from collections import OrderedDict
 import numpy as np
 from scipy.spatial import ConvexHull # pylint: disable=E0401,E0611
 from typing import Union
 import cv2
-
-from modules.safe import unsafe_torch_load
 
 from ..modules.spade_generator import SPADEDecoder
 from ..modules.warping_network import WarpingNetwork
@@ -124,19 +121,11 @@ def concat_feat(kp_source: torch.Tensor, kp_driving: torch.Tensor) -> torch.Tens
     return feat
 
 
-def filter_checkpoint_for_model(checkpoint, prefix):
-    """Filter and adjust the checkpoint dictionary for a specific model based on the prefix."""
-    # Create a new dictionary where keys are adjusted by removing the prefix and the model name
-    filtered_checkpoint = {key.replace(prefix + "_module.", ""): value for key, value in checkpoint.items() if key.startswith(prefix)}
-    return filtered_checkpoint
-
-
-def get_loaded_model(ckpt_path, device):
-    _, extension = os.path.splitext(ckpt_path)
-    if extension.lower() == ".safetensors":
-        return safetensors.torch.load_file(ckpt_path, device=device)
-    else:
-        return unsafe_torch_load(ckpt_path, map_location=lambda storage, loc: storage)
+def remove_ddp_dumplicate_key(state_dict):
+    state_dict_new = OrderedDict()
+    for key in state_dict.keys():
+        state_dict_new[key.replace('module.', '')] = state_dict[key]
+    return state_dict_new
 
 
 def load_model(ckpt_path, model_config, device, model_type):
@@ -153,26 +142,20 @@ def load_model(ckpt_path, model_config, device, model_type):
     elif model_type == 'stitching_retargeting_module':
         # Special handling for stitching and retargeting module
         config = model_config['model_params']['stitching_retargeting_module_params']
-        checkpoint = get_loaded_model(ckpt_path, device)
+        checkpoint = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
 
-        stitcher_prefix = 'retarget_shoulder'
-        stitcher_checkpoint = filter_checkpoint_for_model(checkpoint, stitcher_prefix)
         stitcher = StitchingRetargetingNetwork(**config.get('stitching'))
-        stitcher.load_state_dict(stitcher_checkpoint)
+        stitcher.load_state_dict(remove_ddp_dumplicate_key(checkpoint['retarget_shoulder']))
         stitcher = stitcher.to(device)
         stitcher.eval()
 
-        retargetor_lip_prefix = 'retarget_mouth'
-        retargetor_lip_checkpoint = filter_checkpoint_for_model(checkpoint, retargetor_lip_prefix)
         retargetor_lip = StitchingRetargetingNetwork(**config.get('lip'))
-        retargetor_lip.load_state_dict(retargetor_lip_checkpoint)
+        retargetor_lip.load_state_dict(remove_ddp_dumplicate_key(checkpoint['retarget_mouth']))
         retargetor_lip = retargetor_lip.to(device)
         retargetor_lip.eval()
 
-        retargetor_eye_prefix = 'retarget_eye'
-        retargetor_eye_checkpoint = filter_checkpoint_for_model(checkpoint, retargetor_eye_prefix)
         retargetor_eye = StitchingRetargetingNetwork(**config.get('eye'))
-        retargetor_eye.load_state_dict(retargetor_eye_checkpoint)
+        retargetor_eye.load_state_dict(remove_ddp_dumplicate_key(checkpoint['retarget_eye']))
         retargetor_eye = retargetor_eye.to(device)
         retargetor_eye.eval()
 
@@ -184,7 +167,7 @@ def load_model(ckpt_path, model_config, device, model_type):
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
-    model.load_state_dict(get_loaded_model(ckpt_path, device))
+    model.load_state_dict(torch.load(ckpt_path, map_location=lambda storage, loc: storage))
     model.eval()
     return model
 

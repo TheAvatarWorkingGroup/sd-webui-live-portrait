@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from torch.autograd import Function
 from torch.autograd.function import once_differentiable
 
-from liveportrait.utils.dependencies.XPose.models.UniPose.ops.lib import MultiScaleDeformableAttention as MSDA
+import MultiScaleDeformableAttention as MSDA
 
 
 class MSDeformAttnFunction(Function):
