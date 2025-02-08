@@ -1,8 +1,6 @@
 import datetime
-import os
 import os.path as osp
 from pathlib import Path
-from typing import cast, Literal
 from packaging.version import parse
 
 import gradio as gr
@@ -13,7 +11,6 @@ from modules import (
     restart,
     script_callbacks,
     shared,
-    generation_parameters_copypaste,
 )
 from modules.paths_internal import data_path
 
@@ -33,14 +30,18 @@ from internal_liveportrait.utils import (
     del_xpose_lib_dir,
 )
 
-repo_root = Path(__file__).parent.parent
+from scripts.ui import (
+    create_portrait_animation_tab,
+    create_portrait_retargeting_tab,
+    create_video_retargeting_tab,
+)
 
+repo_root = Path(__file__).parent.parent
 gradio_pipeline: GradioPipeline | None = None
 gradio_pipeline_animal: GradioPipelineAnimal | None = None
 
-gradio_version = parse(gr.__version__)
-
-if gradio_version.major > 3:
+# Patch Gradio's file saving for newer versions
+if parse(gr.__version__).major > 3:
     try:
 
         def save_pil_to_file_patched(*args, **kwargs):
@@ -68,72 +69,68 @@ class Script(scripts.Script):
         return ()
 
 
-def create_send_image_button():
-    return gr.Button("Send to Live Portrait", variant="secondary")
-
-
 def get_image_from_tab(img):
+    """Helper function to extract image from various tab formats."""
     if img is None:
         return None
     if isinstance(img, list) and len(img) > 0:
-        # Handle gallery images (txt2img/img2img output)
         return img[0] if isinstance(img[0], dict) else img[0][0]
     elif isinstance(img, dict):
-        # Handle single image (img2img input)
         return img.get("image", None)
     return img
 
 
 def add_source_image_buttons(source_image_component):
+    """Add buttons to get images from other tabs."""
     with gr.Row():
         img2img_source = gr.Button("Get from Image-to-Image")
         txt2img_source = gr.Button("Get from Text-to-Image")
         extras_source = gr.Button("Get from Extras")
 
-    def get_img2img_image():
-        return get_image_from_tab(getattr(shared, "img2img_image", None))
-
-    def get_txt2img_image():
-        return get_image_from_tab(getattr(shared, "txt2img_gallery", None))
-
-    def get_extras_image():
-        return get_image_from_tab(getattr(shared, "extras_image", None))
-
-    # Get the current image from img2img tab
     img2img_source.click(
-        fn=get_img2img_image,
+        fn=lambda: get_image_from_tab(getattr(shared, "img2img_image", None)),
         inputs=[],
         outputs=[source_image_component],
     )
-
-    # Get the current image from txt2img gallery
     txt2img_source.click(
-        fn=get_txt2img_image,
+        fn=lambda: get_image_from_tab(getattr(shared, "txt2img_gallery", None)),
+        inputs=[],
+        outputs=[source_image_component],
+    )
+    extras_source.click(
+        fn=lambda: get_image_from_tab(getattr(shared, "extras_image", None)),
         inputs=[],
         outputs=[source_image_component],
     )
 
-    # Get the current image from extras tab
-    extras_source.click(
-        fn=get_extras_image,
-        inputs=[],
-        outputs=[source_image_component],
-    )
+
+def clear_model_cache():
+    """Clear GPU memory and reset pipelines."""
+    global gradio_pipeline, gradio_pipeline_animal
+    gradio_pipeline = None
+    gradio_pipeline_animal = None
+    devices.torch_gc()
+
+
+def reinstall_xpose(*args, **kwargs):
+    """Reinstall xpose library and restart if needed."""
+    del_xpose_lib_dir()
+    if restart.is_restartable:
+        restart.restart_program()
+    else:
+        restart.stop_program()
+
+
+def create_send_image_button():
+    return gr.Button("Send to Live Portrait", variant="secondary")
 
 
 def on_ui_tabs():
     if shared.cmd_opts.nowebui:
         return
 
-    def clear_model_cache():
-        global gradio_pipeline, gradio_pipeline_animal
-        gradio_pipeline = None
-        gradio_pipeline_animal = None
-        devices.torch_gc()
-
     def get_crop_config():
         # Get settings from shared options but don't use them as model parameters
-        # since they're not part of CropConfig
         device = str(
             shared.opts.data.get("live_portrait_face_alignment_detector_device", "cuda")
         ).lower()
@@ -273,70 +270,165 @@ def on_ui_tabs():
             gradio_pipeline_animal.args.output_dir = argument_cfg.output_dir
         return gradio_pipeline_animal
 
-    def gpu_wrapped_init_retargeting_image(*args, **kwargs):
-        pipeline = init_gradio_pipeline()
-        # Extract the parameters from args or kwargs
-        retargeting_source_scale = (
-            args[0] if len(args) > 0 else kwargs.get("retargeting_source_scale", 2.5)
-        )
-        eye_ratio = (
-            args[1] if len(args) > 1 else kwargs.get("eye_retargeting_slider", 0.0)
-        )
-        lip_ratio = (
-            args[2] if len(args) > 2 else kwargs.get("lip_retargeting_slider", 0.0)
-        )
-        image_input = (
-            args[3] if len(args) > 3 else kwargs.get("retargeting_input_image", None)
-        )
-
-        # Skip if no image is provided
-        if image_input is None:
-            return 0.0, 0.0
-
-        # Handle the image path
-        image_path = (
-            image_input.name if hasattr(image_input, "name") else str(image_input)
-        )
-        if not os.path.exists(image_path):
-            print(f"Warning: Image path does not exist: {image_path}")
-            return 0.0, 0.0
-
-        # Call init_retargeting_image with the correct parameter names
-        src_eye_ratio, src_lip_ratio = pipeline.init_retargeting_image(
-            scale=retargeting_source_scale,
-            source_eye_ratio=eye_ratio,
-            source_lip_ratio=lip_ratio,
-            image=image_path,
-        )
-        return float(src_eye_ratio), float(src_lip_ratio)
-
     def gpu_wrapped_execute_image_retargeting(*args, **kwargs):
         pipeline = init_gradio_pipeline()
-        # Extract and validate the image input
-        image_input = kwargs.get("retargeting_input_image", None)
+        # Extract and validate the image input - it's the 18th argument (0-based index 17)
+        image_input = args[17] if len(args) > 17 else None
         if image_input is None:
             print("Warning: No image provided for retargeting")
-            return None, None
+            return (
+                None,  # retargeting_output
+                None,  # retargeting_output_paste_back
+                gr.update(visible=False),  # retargeting_output_video
+                gr.update(visible=False),  # retargeting_output_video_paste_back
+            )
 
         # Handle the image path
         if hasattr(image_input, "name"):
-            kwargs["retargeting_input_image"] = image_input.name
+            args = list(args)
+            args[17] = image_input.name
         else:
-            kwargs["retargeting_input_image"] = str(image_input)
+            args = list(args)
+            args[17] = str(image_input)
 
-        out, out_to_ori_blend = pipeline.execute_image_retargeting(*args, **kwargs)
-        # Convert the output to the format expected by Gradio's Gallery
-        if isinstance(out, dict) and "image" in out:
-            out = out["image"]
-        if isinstance(out_to_ori_blend, dict) and "image" in out_to_ori_blend:
-            out_to_ori_blend = out_to_ori_blend["image"]
-        return out, out_to_ori_blend
+        try:
+            result = pipeline.execute_image_retargeting(*args, **kwargs)
+            if len(result) == 2:  # Image output
+                out, out_paste_back = result
+                # Ensure we're returning single images, not lists
+                if isinstance(out, list):
+                    out = out[0] if out else None
+                if isinstance(out_paste_back, list):
+                    out_paste_back = out_paste_back[0] if out_paste_back else None
+
+                # Handle dict outputs (e.g. {"image": img})
+                if isinstance(out, dict) and "image" in out:
+                    out = out["image"]
+                if isinstance(out_paste_back, dict) and "image" in out_paste_back:
+                    out_paste_back = out_paste_back["image"]
+
+                return (
+                    out,  # Single image for retargeting output
+                    out_paste_back,  # Single image for paste-back output
+                    gr.update(visible=False),  # Hide video output
+                    gr.update(visible=False),  # Hide video paste-back output
+                )
+            else:  # Video output
+                out_video, out_video_paste_back = result
+                return (
+                    gr.update(visible=False),  # Hide image output
+                    gr.update(visible=False),  # Hide image paste-back output
+                    out_video,  # Video output
+                    out_video_paste_back,  # Video paste-back output
+                )
+        except Exception as e:
+            print(f"Error in execute_image_retargeting: {str(e)}")
+            return None, None, gr.update(visible=False), gr.update(visible=False)
 
     def gpu_wrapped_execute_video(*args, **kwargs):
-        return init_gradio_pipeline().execute_video(*args, **kwargs)
+        pipeline = init_gradio_pipeline()
+
+        # Extract source inputs and handle potential dict inputs
+        source_image = args[0] if len(args) > 0 else None
+        source_video = args[1] if len(args) > 1 else None
+
+        # Extract driving inputs
+        driving_video = args[2] if len(args) > 2 else None
+        driving_image = args[3] if len(args) > 3 else None
+        driving_image_webcam = args[4] if len(args) > 4 else None
+        driving_pickle = args[5] if len(args) > 5 else None
+
+        # Handle various input types
+        def process_input(inp):
+            if isinstance(inp, (list, tuple)):
+                inp = inp[0] if inp else None
+            if isinstance(inp, dict):
+                if "image" in inp:
+                    return inp["image"]
+                if "video" in inp:
+                    return inp["video"]
+                if "name" in inp:
+                    return inp["name"]
+            return inp
+
+        # Process all inputs
+        source_image = process_input(source_image)
+        source_video = process_input(source_video)
+        driving_video = process_input(driving_video)
+        driving_image = process_input(driving_image)
+        driving_image_webcam = process_input(driving_image_webcam)
+        driving_pickle = process_input(driving_pickle)
+
+        # Extract tab states from the end of args
+        source_tab = args[-2] if len(args) > len(args) - 2 else "source_image_tab"
+        driving_tab = args[-1] if len(args) > len(args) - 1 else "driving_video_tab"
+
+        # Convert file inputs to paths
+        if hasattr(source_image, "name"):
+            source_image = source_image.name
+        if hasattr(source_video, "name"):
+            source_video = source_video.name
+        if hasattr(driving_video, "name"):
+            driving_video = driving_video.name
+        if hasattr(driving_image, "name"):
+            driving_image = driving_image.name
+        if hasattr(driving_image_webcam, "name"):
+            driving_image_webcam = driving_image_webcam.name
+        if hasattr(driving_pickle, "name"):
+            driving_pickle = driving_pickle.name
+
+        # Create new args list without tab states
+        new_args = [
+            source_image,
+            source_video,
+            driving_video,
+            driving_image,
+            driving_image_webcam,
+            driving_pickle,
+        ]
+
+        # Map tab IDs to the expected values
+        kwargs["tab_selection"] = "Image" if "image" in source_tab.lower() else "Video"
+        kwargs["v_tab_selection"] = (
+            "Video"
+            if "video" in driving_tab.lower()
+            else (
+                "Image"
+                if "image" in driving_tab.lower()
+                else ("Webcam" if "webcam" in driving_tab.lower() else "Pickle")
+            )
+        )
+
+        # Debug print
+        print(f"Source tab: {kwargs['tab_selection']}")
+        print(f"Driving tab: {kwargs['v_tab_selection']}")
+        print(f"Source image: {source_image}")
+        print(f"Source video: {source_video}")
+        print(f"Driving video: {driving_video}")
+        print(f"Driving image: {driving_image}")
+        print(f"Driving webcam: {driving_image_webcam}")
+        print(f"Driving pickle: {driving_pickle}")
+
+        return pipeline.execute_video(*new_args, **kwargs)
 
     def gpu_wrapped_execute_video_retargeting(*args, **kwargs):
-        return init_gradio_pipeline().execute_video_retargeting(*args, **kwargs)
+        pipeline = init_gradio_pipeline()
+        try:
+            # Extract and process video input
+            video_input = args[1] if len(args) > 1 else None
+            if video_input is None:
+                print("Warning: No video provided for retargeting")
+                return None, None
+
+            # Handle file path
+            if hasattr(video_input, "name"):
+                args = list(args)
+                args[1] = video_input.name
+
+            return pipeline.execute_video_retargeting(*args, **kwargs)
+        except Exception as e:
+            print(f"Error in execute_video_retargeting: {str(e)}")
+            return None, None
 
     def gpu_wrapped_execute_video_animal(*args, **kwargs):
         return init_gradio_pipeline_animal().execute_video(*args, **kwargs)
@@ -364,672 +456,244 @@ def on_ui_tabs():
             True,
         )
 
-    def reinstall_xpose(*args, **kwargs):
-        del_xpose_lib_dir()
-        if restart.is_restartable:
-            restart.restart_program()
-        else:
-            restart.stop_program()
-
     with gr.Blocks(analytics_enabled=False) as live_portrait:
+        # Add tab state tracking
+        source_tab_state = gr.State(value="Image")  # Default to Image tab
+        driving_tab_state = gr.State(value="Video")  # Default to Video tab
+
+        # Now build the UI layout
         with gr.Tabs():
-            with gr.Tab("Portrait Animation"):
-                with gr.Row():
-                    with gr.Column():
-                        source_image_input = gr.Image(
-                            type="filepath", label="Source Image"
-                        )
-                        add_source_image_buttons(source_image_input)
-                        with gr.Accordion(open=True, label="Cropping Options (Source)"):
-                            flag_do_crop_input = gr.Checkbox(
-                                value=True, label="Crop (source)"
-                            )
-                            source_face_index = gr.Number(
-                                value=0,
-                                label="Face Index",
-                                minimum=0,
-                                maximum=999,
-                                step=1,
-                            )
-                            scale = gr.Number(
-                                value=2.3,
-                                label="Crop Scale",
-                                minimum=1.8,
-                                maximum=3.2,
-                                step=0.05,
-                            )
-                            vx_ratio = gr.Number(
-                                value=0.0,
-                                label="Crop X",
-                                minimum=-0.5,
-                                maximum=0.5,
-                                step=0.01,
-                            )
-                            vy_ratio = gr.Number(
-                                value=-0.125,
-                                label="Crop Y",
-                                minimum=-0.5,
-                                maximum=0.5,
-                                step=0.01,
-                            )
-
-                    with gr.Column():
-                        with gr.Tabs():
-                            with gr.TabItem("Driving Video"):
-                                driving_video_input = gr.Video()
-                            with gr.TabItem(
-                                "Driving Video (Webcam)",
-                                visible=gradio_version.major < 4,
-                            ):
-                                driving_video_webcam_input = gr.Video(
-                                    format="mp4", include_audio=True
-                                )
-                            with gr.TabItem("Driving Image"):
-                                driving_image_input = gr.Image(type="filepath")
-                            with gr.TabItem(
-                                "Driving Image (Webcam)",
-                                visible=gradio_version.major < 4,
-                            ):
-                                driving_image_webcam_input = gr.Image(type="filepath")
-                            with gr.TabItem("Driving Pickle"):
-                                driving_video_pickle_input = gr.File(
-                                    type=(
-                                        "filepath"
-                                        if gradio_version.major >= 4
-                                        else "file"
-                                    ),
-                                    file_types=[".pkl"],
-                                )
-
-                with gr.Row():
-                    with gr.Accordion(open=True, label="Animation Options"):
-                        flag_normalize_lip = gr.Checkbox(
-                            value=False, label="normalize lip"
-                        )
-                        flag_relative_input = gr.Checkbox(
-                            value=True, label="relative motion"
-                        )
-                        flag_remap_input = gr.Checkbox(value=True, label="paste-back")
-                        flag_stitching_input = gr.Checkbox(
-                            value=True, label="stitching"
-                        )
-                        animation_region = gr.Radio(
-                            ["exp", "pose", "lip", "eyes", "all"],
-                            value="all",
-                            label="animation region",
-                        )
-                        driving_option_input = gr.Radio(
-                            ["expression-friendly", "pose-friendly"],
-                            value="expression-friendly",
-                            label="driving option (i2v)",
-                        )
-                        driving_multiplier = gr.Number(
-                            value=1.0,
-                            label="driving multiplier (i2v)",
-                            minimum=0.0,
-                            maximum=2.0,
-                            step=0.02,
-                        )
-                        driving_smooth_observation_variance = gr.Number(
-                            value=3e-7,
-                            label="motion smooth strength (v2v)",
-                            minimum=1e-11,
-                            maximum=1e-2,
-                            step=1e-8,
-                        )
-
-                with gr.Row():
-                    process_button_animation = gr.Button(
-                        "🚀 Animate", variant="primary"
-                    )
-                    process_button_reset = gr.Button("🧹 Clear")
-
-                with gr.Row():
-                    output_video_i2v = gr.Video(autoplay=False, label="Output Video")
-                    output_video_concat_i2v = gr.Video(
-                        autoplay=False, label="Output Video with Paste-back"
-                    )
-
-            with gr.Tab("Image Retargeting"):
-                with gr.Row():
-                    with gr.Column():
-                        retargeting_input_image = gr.Image(
-                            type="filepath", label="Source Image"
-                        )
-                        add_source_image_buttons(retargeting_input_image)
-
-                        with gr.Row():
-                            flag_do_crop_input_retargeting_image = gr.Checkbox(
-                                value=True, label="do crop (source)"
-                            )
-                            flag_stitching_retargeting_input = gr.Checkbox(
-                                value=True, label="stitching"
-                            )
-                            face_index = gr.Number(
-                                value=0,
-                                label="face index",
-                                minimum=0,
-                                maximum=999,
-                                step=1,
-                            )
-                            retargeting_source_scale = gr.Number(
-                                minimum=1.8,
-                                maximum=3.2,
-                                value=2.5,
-                                step=0.05,
-                                label="crop scale",
-                            )
-                            eye_retargeting_slider = gr.Slider(
-                                minimum=0,
-                                maximum=0.8,
-                                step=0.01,
-                                label="target eye-open ratio",
-                                visible=False,
-                            )
-                            lip_retargeting_slider = gr.Slider(
-                                minimum=0,
-                                maximum=0.8,
-                                step=0.01,
-                                label="target lip-open ratio",
-                                visible=False,
-                            )
-
-                with gr.Row():
-                    with gr.Column():
-                        with gr.Accordion(open=True, label="Facial movement sliders"):
-                            head_pitch_slider = gr.Slider(
-                                minimum=-15.0,
-                                maximum=15.0,
-                                value=0,
-                                step=1,
-                                label="relative pitch",
-                            )
-                            head_yaw_slider = gr.Slider(
-                                minimum=-25,
-                                maximum=25,
-                                value=0,
-                                step=1,
-                                label="relative yaw",
-                            )
-                            head_roll_slider = gr.Slider(
-                                minimum=-15.0,
-                                maximum=15.0,
-                                value=0,
-                                step=1,
-                                label="relative roll",
-                            )
-                            mov_x = gr.Slider(
-                                minimum=-0.19,
-                                maximum=0.19,
-                                value=0.0,
-                                step=0.01,
-                                label="x-axis movement",
-                            )
-                            mov_y = gr.Slider(
-                                minimum=-0.19,
-                                maximum=0.19,
-                                value=0.0,
-                                step=0.01,
-                                label="y-axis movement",
-                            )
-                            mov_z = gr.Slider(
-                                minimum=0.9,
-                                maximum=1.2,
-                                value=1.0,
-                                step=0.01,
-                                label="z-axis movement",
-                            )
-
-                    with gr.Column():
-                        with gr.Accordion(open=True, label="Facial expression sliders"):
-                            lip_variation_zero = gr.Slider(
-                                minimum=-0.09,
-                                maximum=0.09,
-                                value=0,
-                                step=0.01,
-                                label="pouting",
-                            )
-                            lip_variation_one = gr.Slider(
-                                minimum=-20.0,
-                                maximum=15.0,
-                                value=0,
-                                step=0.01,
-                                label="pursing 😐",
-                            )
-                            lip_variation_two = gr.Slider(
-                                minimum=0.0,
-                                maximum=15.0,
-                                value=0,
-                                step=0.01,
-                                label="grin 😁",
-                            )
-                            lip_variation_three = gr.Slider(
-                                minimum=-90.0,
-                                maximum=120.0,
-                                value=0,
-                                step=1.0,
-                                label="lip close <-> open",
-                            )
-                            smile = gr.Slider(
-                                minimum=-0.3,
-                                maximum=1.3,
-                                value=0,
-                                step=0.01,
-                                label="smile 😄",
-                            )
-                            wink = gr.Slider(
-                                minimum=0,
-                                maximum=39,
-                                value=0,
-                                step=0.01,
-                                label="wink 😉",
-                            )
-                            eyebrow = gr.Slider(
-                                minimum=-30,
-                                maximum=30,
-                                value=0,
-                                step=0.01,
-                                label="eyebrow 🤨",
-                            )
-                            eyeball_direction_x = gr.Slider(
-                                minimum=-30.0,
-                                maximum=30.0,
-                                value=0,
-                                step=0.01,
-                                label="eye gaze (horizontal) 👀",
-                            )
-                            eyeball_direction_y = gr.Slider(
-                                minimum=-63.0,
-                                maximum=63.0,
-                                value=0,
-                                step=0.01,
-                                label="eye gaze (vertical) 🙄",
-                            )
-
-                with gr.Row():
-                    reset_button = gr.Button("🔄 Reset")
-                    process_button_reset_retargeting = gr.Button("🧹 Clear")
-
-                with gr.Row():
-                    retargeting_output_image = gr.Gallery(
-                        preview=True,
-                        selected_index=0,
-                        object_fit="contain",
-                        label="Output",
-                    )
-                    retargeting_output_image_paste_back = gr.Gallery(
-                        preview=True,
-                        selected_index=0,
-                        object_fit="contain",
-                        height=512,
-                        label="Output with Paste-back",
-                    )
-
-                # Add buttons to send images to other tabs
-                with gr.Row():
-                    with gr.Column():
-                        send_to_extras = gr.Button(
-                            "Send to Extras", variant="secondary"
-                        )
-                        send_to_img2img = gr.Button(
-                            "Send to Image-to-Image", variant="secondary"
-                        )
-                    with gr.Column():
-                        send_pasteback_to_extras = gr.Button(
-                            "Send Paste-back to Extras", variant="secondary"
-                        )
-                        send_pasteback_to_img2img = gr.Button(
-                            "Send Paste-back to Image-to-Image", variant="secondary"
-                        )
-
-            with gr.Tab("Video Retargeting"):
-                with gr.Row():
-                    with gr.Column():
-                        retargeting_input_video = gr.Video(label="Source Video")
-                        with gr.Row():
-                            flag_do_crop_input_retargeting_video = gr.Checkbox(
-                                value=True, label="do crop (source)"
-                            )
-                            video_face_index = gr.Number(
-                                value=0,
-                                label="face index",
-                                minimum=0,
-                                maximum=999,
-                                step=1,
-                            )
-                            video_retargeting_source_scale = gr.Number(
-                                minimum=1.8,
-                                maximum=3.2,
-                                value=2.3,
-                                step=0.05,
-                                label="crop scale",
-                            )
-                            video_lip_retargeting_slider = gr.Slider(
-                                minimum=0,
-                                maximum=0.8,
-                                step=0.01,
-                                label="target lip-open ratio",
-                            )
-                            driving_smooth_observation_variance_retargeting = gr.Number(
-                                value=3e-7,
-                                label="motion smooth strength (v2v)",
-                                minimum=1e-11,
-                                maximum=1e-2,
-                                step=1e-8,
-                            )
-                            video_retargeting_silence = gr.Checkbox(
-                                value=False, label="keeping the lip silent"
-                            )
-
-                with gr.Row():
-                    process_button_retargeting_video = gr.Button(
-                        "🍄 Retargeting Video", variant="primary"
-                    )
-                    process_button_reset_retargeting = gr.Button("🧹 Clear")
-
-                with gr.Row():
-                    output_video = gr.Video(autoplay=False, label="Output Video")
-                    output_video_paste_back = gr.Video(
-                        autoplay=False, label="Output Video with Paste-back"
-                    )
-
-            if not IS_MACOS:
-                with gr.Tab("Animals"):
-                    if not has_xpose_lib():
-                        gr.Markdown(
-                            "The XPose model, required to generate animal videos, is not installed or could not be installed correctly. Try to reinstall it by following instructions in this extension's README."
-                        )
-                        reinstall_xpose_button = gr.Button(
-                            "Reinstall XPose and Restart UI", variant="primary"
-                        )
-                        reinstall_xpose_button.click(
-                            fn=reinstall_xpose,
-                            _js="restart_reload",
-                            inputs=[],
-                            outputs=[],
-                        )
-                    else:
-                        with gr.Row():
-                            with gr.Column():
-                                source_image_input = gr.Image(
-                                    type="filepath", label="Source Animal Image"
-                                )
-                                add_source_image_buttons(source_image_input)
-
-                                with gr.Accordion(open=True, label="Cropping Options"):
-                                    flag_do_crop_input = gr.Checkbox(
-                                        value=True, label="do crop (source)"
-                                    )
-                                    scale = gr.Number(
-                                        value=2.3,
-                                        label="source crop scale",
-                                        minimum=1.8,
-                                        maximum=3.2,
-                                        step=0.05,
-                                    )
-                                    vx_ratio = gr.Number(
-                                        value=0.0,
-                                        label="source crop x",
-                                        minimum=-0.5,
-                                        maximum=0.5,
-                                        step=0.01,
-                                    )
-                                    vy_ratio = gr.Number(
-                                        value=-0.125,
-                                        label="source crop y",
-                                        minimum=-0.5,
-                                        maximum=0.5,
-                                        step=0.01,
-                                    )
-
-                            with gr.Column():
-                                with gr.Tabs():
-                                    with gr.TabItem("Driving Pickle"):
-                                        driving_video_pickle_input = gr.File(
-                                            type=(
-                                                "filepath"
-                                                if gradio_version.major >= 4
-                                                else "file"
-                                            ),
-                                            file_types=[".pkl"],
-                                        )
-                                    with gr.TabItem("Driving Video"):
-                                        driving_video_input = gr.Video()
-
-                        with gr.Row():
-                            with gr.Accordion(open=False, label="Animation Options"):
-                                flag_stitching = gr.Checkbox(
-                                    value=False, label="stitching (not recommended)"
-                                )
-                                flag_remap_input = gr.Checkbox(
-                                    value=False, label="paste-back (not recommended)"
-                                )
-                                driving_multiplier = gr.Number(
-                                    value=1.0,
-                                    label="driving multiplier",
-                                    minimum=0.0,
-                                    maximum=2.0,
-                                    step=0.02,
-                                )
-
-                        with gr.Row():
-                            process_button_animation = gr.Button(
-                                "🚀 Animate", variant="primary"
-                            )
-                            process_button_reset = gr.Button("🧹 Clear")
-
-                        with gr.Row():
-                            output_video_animal_i2v = gr.Video(
-                                autoplay=False, label="Output Video"
-                            )
-                            output_video_animal_i2v_gif = gr.Image(
-                                type="numpy", label="Output GIF"
-                            )
-                            output_video_animal_concat_i2v = gr.Video(
-                                autoplay=False, label="Output Video with Paste-back"
-                            )
-
-        # Add missing variable definitions
-        flag_crop_driving_video_input = gr.Checkbox(
-            value=True, label="Crop (driving)", visible=False
-        )
-        driving_face_index = gr.Number(
-            value=0,
-            label="Driving Face Index",
-            minimum=0,
-            maximum=999,
-            step=1,
-            visible=False,
-        )
-        scale_crop_driving_video = gr.Number(
-            value=2.3,
-            label="Driving Crop Scale",
-            minimum=1.8,
-            maximum=3.2,
-            step=0.05,
-            visible=False,
-        )
-        vx_ratio_crop_driving_video = gr.Number(
-            value=0.0,
-            label="Driving Crop X",
-            minimum=-0.5,
-            maximum=0.5,
-            step=0.01,
-            visible=False,
-        )
-        vy_ratio_crop_driving_video = gr.Number(
-            value=-0.125,
-            label="Driving Crop Y",
-            minimum=-0.5,
-            maximum=0.5,
-            step=0.01,
-            visible=False,
-        )
-
-        # Add click handlers for sending images to other tabs
-        def send_image_to_extras(gallery):
-            if not gallery:
-                return
-            selected = gallery[0] if isinstance(gallery[0], dict) else gallery[0][0]
-            setattr(shared, "extras_image", selected)
-
-        def send_image_to_img2img(gallery):
-            if not gallery:
-                return
-            selected = gallery[0] if isinstance(gallery[0], dict) else gallery[0][0]
-            setattr(shared, "img2img_image", {"image": selected})
-
-        send_to_extras.click(
-            fn=send_image_to_extras,
-            inputs=[retargeting_output_image],
-            outputs=[],
-        )
-        send_to_img2img.click(
-            fn=send_image_to_img2img,
-            inputs=[retargeting_output_image],
-            outputs=[],
-        )
-        send_pasteback_to_extras.click(
-            fn=send_image_to_extras,
-            inputs=[retargeting_output_image_paste_back],
-            outputs=[],
-        )
-        send_pasteback_to_img2img.click(
-            fn=send_image_to_img2img,
-            inputs=[retargeting_output_image_paste_back],
-            outputs=[],
-        )
-
-        # Wire up all the event handlers
-        process_button_animation.click(
-            fn=gpu_wrapped_execute_video,
-            inputs=[
-                source_image_input,
-                driving_video_input,
-                driving_video_webcam_input,
-                driving_image_input,
-                driving_image_webcam_input,
-                driving_video_pickle_input,
-                flag_normalize_lip,
-                flag_relative_input,
-                flag_do_crop_input,
-                flag_remap_input,
-                flag_stitching_input,
-                animation_region,
-                driving_option_input,
-                driving_multiplier,
-                flag_crop_driving_video_input,
-                source_face_index,
-                scale,
-                vx_ratio,
-                vy_ratio,
-                driving_face_index,
-                scale_crop_driving_video,
-                vx_ratio_crop_driving_video,
-                vy_ratio_crop_driving_video,
-                driving_smooth_observation_variance,
-            ],
-            outputs=[output_video_i2v, output_video_concat_i2v],
-            show_progress="full",
-        )
-
-        retargeting_input_image.change(
-            fn=gpu_wrapped_init_retargeting_image,
-            inputs=[
-                retargeting_source_scale,
-                eye_retargeting_slider,
-                lip_retargeting_slider,
-                retargeting_input_image,
-            ],
-            outputs=[eye_retargeting_slider, lip_retargeting_slider],
-        )
-
-        for slider in [
-            head_pitch_slider,
-            head_yaw_slider,
-            head_roll_slider,
-            mov_x,
-            mov_y,
-            mov_z,
-            lip_variation_zero,
-            lip_variation_one,
-            lip_variation_two,
-            lip_variation_three,
-            smile,
-            wink,
-            eyebrow,
-            eyeball_direction_x,
-            eyeball_direction_y,
-        ]:
-            slider.change(
-                fn=gpu_wrapped_execute_image_retargeting,
-                inputs=[
-                    eye_retargeting_slider,
-                    lip_retargeting_slider,
-                    head_pitch_slider,
-                    head_yaw_slider,
-                    head_roll_slider,
-                    mov_x,
-                    mov_y,
-                    mov_z,
-                    lip_variation_zero,
-                    lip_variation_one,
-                    lip_variation_two,
-                    lip_variation_three,
-                    smile,
-                    wink,
-                    eyebrow,
-                    eyeball_direction_x,
-                    eyeball_direction_y,
-                    retargeting_input_image,
-                    face_index,
-                    retargeting_source_scale,
-                    flag_stitching_retargeting_input,
-                    flag_do_crop_input_retargeting_image,
-                ],
-                outputs=[retargeting_output_image, retargeting_output_image_paste_back],
+            # Create the main tabs
+            animation_components = create_portrait_animation_tab(init_gradio_pipeline)
+            retargeting_components = create_portrait_retargeting_tab(
+                init_gradio_pipeline
+            )
+            video_retargeting_components = create_video_retargeting_tab(
+                init_gradio_pipeline
             )
 
-        process_button_retargeting_video.click(
-            fn=gpu_wrapped_execute_video_retargeting,
-            inputs=[
-                video_lip_retargeting_slider,
-                retargeting_input_video,
-                video_face_index,
-                video_retargeting_source_scale,
-                driving_smooth_observation_variance_retargeting,
-                video_retargeting_silence,
-                flag_do_crop_input_retargeting_video,
-            ],
-            outputs=[output_video, output_video_paste_back],
-            show_progress="full",
-        )
+            # Wire up the animation tab handlers
+            animation_components["source_tabs"].select(
+                fn=lambda evt: (
+                    "Image"
+                    if evt is None or not hasattr(evt, "selected")
+                    else (
+                        evt.selected.id
+                        if hasattr(evt.selected, "id")
+                        else "source_image_tab"
+                    )
+                ),
+                inputs=None,
+                outputs=source_tab_state,
+            )
 
-        if not IS_MACOS and has_xpose_lib():
-            process_button_animation.click(
-                fn=gpu_wrapped_execute_video_animal,
+            animation_components["driving_tabs"].select(
+                fn=lambda evt: (
+                    "Video"
+                    if evt is None or not hasattr(evt, "selected")
+                    else (
+                        evt.selected.id
+                        if hasattr(evt.selected, "id")
+                        else "driving_video_tab"
+                    )
+                ),
+                inputs=None,
+                outputs=driving_tab_state,
+            )
+
+            # Wire up the animation button handlers
+            animation_components["process_button_animation"].click(
+                fn=gpu_wrapped_execute_video,
                 inputs=[
-                    source_image_input,
-                    driving_video_input,
-                    driving_video_pickle_input,
-                    flag_do_crop_input,
-                    flag_remap_input,
-                    driving_multiplier,
-                    flag_stitching,
-                    flag_crop_driving_video_input,
-                    scale,
-                    vx_ratio,
-                    vy_ratio,
-                    scale_crop_driving_video,
-                    vx_ratio_crop_driving_video,
-                    vy_ratio_crop_driving_video,
+                    animation_components["source_image_input"],
+                    animation_components["source_video_input"],
+                    animation_components["driving_video_input"],
+                    animation_components["driving_image_input"],
+                    animation_components["driving_image_webcam_input"],
+                    animation_components["driving_video_pickle_input"],
+                    animation_components["flag_normalize_lip"],
+                    animation_components["flag_relative_input"],
+                    animation_components["flag_do_crop_input"],
+                    animation_components["flag_remap_input"],
+                    animation_components["flag_stitching_input"],
+                    animation_components["animation_region"],
+                    animation_components["driving_option_input"],
+                    animation_components["driving_multiplier"],
+                    animation_components["flag_crop_driving_video_input"],
+                    animation_components["source_face_index"],
+                    animation_components["scale"],
+                    animation_components["vx_ratio"],
+                    animation_components["vy_ratio"],
+                    animation_components["driving_face_index"],
+                    animation_components["scale_crop_driving_video"],
+                    animation_components["vx_ratio_crop_driving_video"],
+                    animation_components["vy_ratio_crop_driving_video"],
+                    animation_components["driving_smooth_observation_variance"],
+                    source_tab_state,
+                    driving_tab_state,
                 ],
                 outputs=[
-                    output_video_animal_i2v,
-                    output_video_animal_concat_i2v,
-                    output_video_animal_i2v_gif,
+                    animation_components["output_video_i2v"],
+                    animation_components["output_video_concat_i2v"],
                 ],
                 show_progress="full",
+            )
+
+            # Wire up the retargeting handlers
+            retargeting_components["retargeting_input_image"].change(
+                fn=init_gradio_pipeline().init_retargeting_image,
+                inputs=[
+                    retargeting_components["retargeting_source_scale"],
+                    retargeting_components["eye_retargeting_slider"],
+                    retargeting_components["lip_retargeting_slider"],
+                    retargeting_components["retargeting_input_image"],
+                ],
+                outputs=[
+                    retargeting_components["eye_retargeting_slider"],
+                    retargeting_components["lip_retargeting_slider"],
+                ],
+            )
+
+            # Add handlers for all retargeting sliders
+            retargeting_sliders = [
+                retargeting_components["eye_retargeting_slider"],
+                retargeting_components["lip_retargeting_slider"],
+                retargeting_components["head_pitch"],
+                retargeting_components["head_yaw"],
+                retargeting_components["head_roll"],
+                retargeting_components["mov_x"],
+                retargeting_components["mov_y"],
+                retargeting_components["mov_z"],
+                retargeting_components["lip_variation_zero"],
+                retargeting_components["lip_variation_one"],
+                retargeting_components["lip_variation_two"],
+                retargeting_components["lip_variation_three"],
+                retargeting_components["smile"],
+                retargeting_components["wink"],
+                retargeting_components["eyebrow"],
+                retargeting_components["eyeball_x"],
+                retargeting_components["eyeball_y"],
+            ]
+
+            for slider in retargeting_sliders:
+                slider.change(
+                    fn=gpu_wrapped_execute_image_retargeting,
+                    inputs=[
+                        retargeting_components["eye_retargeting_slider"],
+                        retargeting_components["lip_retargeting_slider"],
+                        retargeting_components["head_pitch"],
+                        retargeting_components["head_yaw"],
+                        retargeting_components["head_roll"],
+                        retargeting_components["mov_x"],
+                        retargeting_components["mov_y"],
+                        retargeting_components["mov_z"],
+                        retargeting_components["lip_variation_zero"],
+                        retargeting_components["lip_variation_one"],
+                        retargeting_components["lip_variation_two"],
+                        retargeting_components["lip_variation_three"],
+                        retargeting_components["smile"],
+                        retargeting_components["wink"],
+                        retargeting_components["eyebrow"],
+                        retargeting_components["eyeball_x"],
+                        retargeting_components["eyeball_y"],
+                        retargeting_components["retargeting_input_image"],
+                        retargeting_components["retargeting_source_scale"],
+                        retargeting_components["flag_stitching_retargeting"],
+                        retargeting_components["flag_animate_transition"],
+                        retargeting_components["flag_do_crop_input_retargeting"],
+                    ],
+                    outputs=[
+                        retargeting_components["retargeting_output"],
+                        retargeting_components["retargeting_output_paste_back"],
+                        retargeting_components["retargeting_output_video"],
+                        retargeting_components["retargeting_output_video_paste_back"],
+                    ],
+                )
+
+            # Wire up video retargeting handlers
+            video_retargeting_components["process_video_retargeting_button"].click(
+                fn=gpu_wrapped_execute_video_retargeting,
+                inputs=[
+                    video_retargeting_components["video_lip_retargeting_slider"],
+                    video_retargeting_components["retargeting_input_video"],
+                    video_retargeting_components["video_retargeting_source_scale"],
+                    video_retargeting_components[
+                        "driving_smooth_observation_variance_retargeting"
+                    ],
+                    video_retargeting_components["video_retargeting_silence"],
+                    video_retargeting_components[
+                        "flag_do_crop_input_retargeting_video"
+                    ],
+                ],
+                outputs=[
+                    video_retargeting_components["video_retargeting_output"],
+                    video_retargeting_components["video_retargeting_output_paste_back"],
+                ],
+                show_progress=True,
+            )
+
+            # Add reset handlers
+            retargeting_components["reset_retargeting_button"].click(
+                fn=reset_sliders,
+                inputs=[],
+                outputs=retargeting_sliders
+                + [
+                    retargeting_components["retargeting_source_scale"],
+                    retargeting_components["flag_stitching_retargeting"],
+                    retargeting_components["flag_animate_transition"],
+                    retargeting_components["flag_do_crop_input_retargeting"],
+                ],
+            )
+
+            # Add clear handlers
+            retargeting_components["clear_retargeting_button"].click(
+                fn=None,
+                inputs=[],
+                outputs=[
+                    retargeting_components["retargeting_input_image"],
+                    retargeting_components["retargeting_output"],
+                    retargeting_components["retargeting_output_paste_back"],
+                    retargeting_components["retargeting_output_video"],
+                    retargeting_components["retargeting_output_video_paste_back"],
+                ],
+                _js="() => [null, null, null, null, null]",
+            )
+
+            video_retargeting_components["clear_video_retargeting_button"].click(
+                fn=None,
+                inputs=[],
+                outputs=[
+                    video_retargeting_components["retargeting_input_video"],
+                    video_retargeting_components["video_retargeting_output"],
+                    video_retargeting_components["video_retargeting_output_paste_back"],
+                ],
+                _js="() => [null, null, null]",
+            )
+
+            animation_components["process_button_reset"].click(
+                fn=reset_sliders,
+                inputs=[],
+                outputs=[
+                    animation_components["vx_ratio"],
+                    animation_components["vy_ratio"],
+                    animation_components["scale"],
+                    animation_components["vx_ratio_crop_driving_video"],
+                    animation_components["vy_ratio_crop_driving_video"],
+                    animation_components["scale_crop_driving_video"],
+                    animation_components["flag_normalize_lip"],
+                    animation_components["flag_relative_input"],
+                    animation_components["flag_remap_input"],
+                    animation_components["flag_stitching_input"],
+                    animation_components["flag_do_crop_input"],
+                    animation_components["flag_crop_driving_video_input"],
+                    animation_components["source_face_index"],
+                    animation_components["driving_face_index"],
+                    animation_components["driving_multiplier"],
+                    animation_components["driving_smooth_observation_variance"],
+                    animation_components["flag_eye_retargeting"],
+                    animation_components["flag_lip_retargeting"],
+                    animation_components["flag_source_video_eye_retargeting"],
+                ],
             )
 
     return [(live_portrait, "Live Portrait", "live_portrait")]

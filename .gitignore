@@ -22,4 +22,6 @@ liveportrait/utils/dependencies/XPose/models/UniPose/ops/MultiScaleDeformableAtt
 animations/
 tmp/
 logs/
-/pretrained_weights
+
+# Pretrained weights
+pretrained_weights/
